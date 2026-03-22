@@ -944,7 +944,7 @@ const DECK_A_LIST = [
   'sternenruferin-mira',
   'prismischer-bewahrer',
   'magus-der-stuerme',
-  'aetherladung','aetherladung',
+  'aetherladung',
   'funkenstoss','funkenstoss',
   'elementarer-riss',
   'sternenfrost',
@@ -954,10 +954,10 @@ const DECK_A_LIST = [
   'bannkreis',
   'kometenbruch',
   'prismafokus',
-];
+]; // 25 cards
 
 const DECK_B_LIST = [
-  'stahlfaust-rekrut','stahlfaust-rekrut',
+  'stahlfaust-rekrut',
   'wolfshoehlen-welpe','wolfshoehlen-welpe',
   'eisensturm-grunzer','eisensturm-grunzer',
   'klingenhauer',
@@ -980,7 +980,7 @@ const DECK_B_LIST = [
   'eisenbeisser',
   'klingenbaron-axt',
   'sturmbrecher-hammer',
-];
+]; // 25 cards
 
 const HEROES = {
   A: { name:'Mira, Sternenruferin', emoji:'⭐', deckClass:'deck-a',
@@ -1157,14 +1157,19 @@ function startPlayerTurn() {
   G.player.maxAether = Math.min(8, G.player.maxAether + 1);
   G.player.aether = G.player.maxAether;
 
-  G.player.board.forEach(m => { m.nullbound = false; });
+  // Decrement nullbound counter for player minions - they become free after 1 full turn
+  G.player.board.forEach(m => {
+    if (m.nullbound) {
+      m.nullboundTurns = (m.nullboundTurns || 1) - 1;
+      if (m.nullboundTurns <= 0) { m.nullbound = false; m.nullboundTurns = 0; }
+    }
+    m.tapped = false;
+  });
   clearTempBuffs('player');
   processStartOfTurnEffects('player');
 
   G.phase = 'draw';
-  if (G.round > 1 || G.player.hand.length < 5) {
-    drawCard('player');
-  }
+  drawCard('player');
 
   G.player.board.forEach(m => { m.justPlayed = false; });
   if (G.player.weapon) G.player.weapon.usedThisTurn = false;
@@ -1184,7 +1189,14 @@ function startAITurn() {
   G.ai.maxAether = Math.min(8, G.ai.maxAether + 1);
   G.ai.aether = G.ai.maxAether;
 
-  G.ai.board.forEach(m => { m.nullbound = false; });
+  // Decrement nullbound counter for AI minions
+  G.ai.board.forEach(m => {
+    if (m.nullbound) {
+      m.nullboundTurns = (m.nullboundTurns || 1) - 1;
+      if (m.nullboundTurns <= 0) { m.nullbound = false; m.nullboundTurns = 0; }
+    }
+    m.tapped = false;
+  });
   clearTempBuffs('ai');
   processStartOfTurnEffects('ai');
 
@@ -1209,9 +1221,6 @@ function endTurn() {
   G.player.board.forEach(m => { m.tempAtk = 0; });
 
   updateUI();
-  G.round++;
-  document.getElementById('round-num').textContent = G.round;
-
   checkWinCondition();
   if (G.gameOver) return;
 
@@ -1326,7 +1335,7 @@ function handleBattlecry(owner, card) {
       const enemies = G.player.board;
       if (enemies.length > 0) {
         const t = enemies[Math.floor(Math.random() * enemies.length)];
-        t.nullbound = true;
+        t.nullbound = true; t.nullboundTurns = 1;
         log(`KI: ${card.name} → Nullbind auf ${t.name}`, 'effect');
       }
     }
@@ -1334,15 +1343,28 @@ function handleBattlecry(owner, card) {
   if (card.effects.includes('battlecry_venombrand')) {
     if (owner === 'player') {
       G.pendingBattlecry = { card, effect: 'venombrand', owner };
-      showInstruction('Wähle einen Minion für Venombrand');
-      highlightTargets('player', false, false, true);
+      showInstruction('Wähle einen beliebigen Minion für Venombrand');
+      // Highlight both own and enemy minions
+      highlightTargets('player', false, false, false);
+      // Also highlight enemy minions explicitly
+      G.ai.board.forEach((m, i) => {
+        document.querySelectorAll('.enemy-board .minion-card')[i]?.classList.add('targetable');
+      });
       return;
     } else {
-      const own = G.ai.board.filter(m => m.instanceId !== card.instanceId);
-      if (own.length > 0) {
-        const t = own[Math.floor(Math.random() * own.length)];
-        t.effects = [...t.effects, 'venombrand'];
-        log(`KI: ${card.name} → Venombrand auf ${t.name}`, 'effect');
+      // AI: prefer applying venombrand to a strong own minion
+      const allMinions = [
+        ...G.ai.board.filter(m => m.instanceId !== card.instanceId).map(m => ({ m, side: 'own' })),
+        ...G.player.board.map(m => ({ m, side: 'enemy' }))
+      ];
+      if (allMinions.length > 0) {
+        // Prefer own high-ATK minion
+        const own = G.ai.board.filter(m => m.instanceId !== card.instanceId);
+        const t = own.length > 0 ? own.reduce((a,b) => b.currentAtk > a.currentAtk ? b : a) : G.player.board[0];
+        if (t) {
+          t.effects = [...t.effects, 'venombrand'];
+          log(`KI: ${card.name} → Venombrand auf ${t.name}`, 'effect');
+        }
       }
     }
   }
@@ -1438,7 +1460,6 @@ function setupSpellTarget(eff) {
     updateUI();
   } else if (eff === 'deal_1_all') {
     G.ai.board.forEach(m => dealDamage({owner:'ai',minion:m}, 1, G.pendingSpell.card, 'player'));
-    G.ai.board.forEach(m => dealDamage({owner:'ai',minion:m}, 0));
     log(`Flammenflut: 1 Schaden auf alle Feinde!`, 'damage');
     cleanupDeadMinions();
     G.player.graveyard.push(G.pendingSpell.card);
@@ -1470,7 +1491,7 @@ function executeAISpell(card, eff) {
   } else if (eff === 'nullbind_plus1' || eff === 'nullbind_target') {
     if (G.player.board.length > 0) {
       const t = G.player.board[0];
-      t.nullbound = true;
+      t.nullbound = true; t.nullboundTurns = 1;
       if (eff === 'nullbind_plus1') dealDamage({owner:'player',minion:t}, 1, card, 'ai');
       log(`KI: ${card.name} → Nullbind auf ${t.name}`, 'effect');
     }
@@ -1640,6 +1661,14 @@ function attackTarget(targetOwner, targetIdx, isHero = false) {
       log(`<b>${attackerMinion.name}</b> greift feindlichen Helden an: <span class="log-damage">${attackerAtk} Schaden</span>`, 'player');
       showDamagePopup(attackerAtk, 'enemy-portrait', true);
 
+      // Rule: When a minion attacks the hero directly, counter-damage is exchanged simultaneously.
+      // The minion takes the hero's weapon ATK as counter-damage (only if hero has a weapon).
+      if (G.ai.weapon) {
+        const counterDmg = G.ai.weapon.currentAtk;
+        attackerMinion.currentHp -= counterDmg;
+        log(`<b>${attackerMinion.name}</b> nimmt <span class="log-damage">${counterDmg} Gegenschaden</span> von ${G.ai.weapon.name}`, 'enemy');
+      }
+
       if (attackerMinion.effects.includes('lifebond')) {
         G.player.hp = Math.min(G.player.maxHp, G.player.hp + attackerAtk);
         log(`Lifebond: +${attackerAtk} HP`, 'heal');
@@ -1714,6 +1743,7 @@ function attackTarget(targetOwner, targetIdx, isHero = false) {
 
       if (attackerMinion.effects.includes('venombrand') && defMinion.currentHp > 0) {
         defMinion.venombrandMark = true;
+        defMinion.venombrandMarkOwner = 'player';
         log(`Venombrand: ${defMinion.name} stirbt am Rundenende!`, 'effect');
       }
 
@@ -1739,7 +1769,10 @@ function getBladeDanceTarget(boardOwner, skipId) {
   const bulwark = board.find(m => m.effects.includes('bulwark') && !m.nullbound);
   if (bulwark) return { owner: boardOwner, minion: bulwark };
   const eligible = board.filter(m => m.instanceId !== skipId);
-  if (eligible.length === 0) return null;
+  if (eligible.length === 0) {
+    // No minion target — Blade Dance hits the hero instead
+    return { owner: boardOwner, isHero: true };
+  }
   const weakest = eligible.reduce((a, b) => b.currentHp < a.currentHp ? b : a);
   return { owner: boardOwner, minion: weakest };
 }
@@ -1765,8 +1798,20 @@ function dealDamage(target, dmg, source, sourceOwner) {
 }
 
 function resolveVenombrandMarks() {
-  G.player.board.forEach(m => { if (m.venombrandMark) { m.currentHp = 0; log(`Venombrand: ${m.name} stirbt!`, 'effect'); } });
-  G.ai.board.forEach(m => { if (m.venombrandMark) { m.currentHp = 0; log(`Venombrand: ${m.name} stirbt!`, 'effect'); } });
+  // Only clear marks placed during the current active turn
+  const currentOwner = G.isPlayerTurn ? 'player' : 'ai';
+  G.player.board.forEach(m => {
+    if (m.venombrandMark && m.venombrandMarkOwner === currentOwner) {
+      m.currentHp = 0;
+      log(`Venombrand: ${m.name} stirbt!`, 'effect');
+    }
+  });
+  G.ai.board.forEach(m => {
+    if (m.venombrandMark && m.venombrandMarkOwner === currentOwner) {
+      m.currentHp = 0;
+      log(`Venombrand: ${m.name} stirbt!`, 'effect');
+    }
+  });
   cleanupDeadMinions();
 }
 
@@ -1809,10 +1854,10 @@ function resolveSpellTarget(targetOwner, targetIdx, isHero) {
     }
     else if (effect === 'deal_5') { dealDamage(target, 5, card, 'player'); log(`${card.name}: 5 Schaden!`, 'damage'); }
     else if (effect === 'nullbind_plus1') {
-      if (target.minion) { target.minion.nullbound = true; dealDamage(target, 1, card, 'player'); log(`${card.name}: Nullbind + 1 Schaden`, 'effect'); }
+      if (target.minion) { target.minion.nullbound = true; target.minion.nullboundTurns = 1; dealDamage(target, 1, card, 'player'); log(`${card.name}: Nullbind + 1 Schaden`, 'effect'); }
     }
     else if (effect === 'nullbind_target') {
-      if (target.minion) { target.minion.nullbound = true; log(`${card.name}: Nullbind`, 'effect'); }
+      if (target.minion) { target.minion.nullbound = true; target.minion.nullboundTurns = 1; log(`${card.name}: Nullbind`, 'effect'); }
     }
     else if (effect === 'remove_bulwark') {
       if (target.minion) { target.minion.effects = target.minion.effects.filter(e => e !== 'bulwark'); log(`${card.name}: Bulwark entfernt`, 'effect'); }
@@ -1841,7 +1886,7 @@ function resolveSpellTarget(targetOwner, targetIdx, isHero) {
       log(`${card.name}: 2 Schaden`, 'damage');
     }
     else if (effect === 'nullbind') {
-      if (target.minion) { target.minion.nullbound = true; log(`${card.name}: Nullbind`, 'effect'); }
+      if (target.minion) { target.minion.nullbound = true; target.minion.nullboundTurns = 1; log(`${card.name}: Nullbind`, 'effect'); }
     }
     else if (effect === 'venombrand') {
       if (target.minion) { if (!target.minion.effects.includes('venombrand')) target.minion.effects.push('venombrand'); log(`${card.name}: Venombrand vergeben`, 'effect'); }
@@ -1979,29 +2024,37 @@ async function runAITurn() {
     let attackedWithWeapon = false;
     if (hasBulwark) {
       const bw = G.player.board.find(m => m.effects.includes('bulwark'));
-      if (bw && bw.currentHp <= weapon.currentAtk) {
-        bw.currentHp -= weapon.currentAtk;
+      if (bw) {
+        // Execution Mark: if target has ≤2 HP at attack time, instakill
+        if (weapon.effects.includes('execution_mark') && bw.currentHp <= 2) {
+          bw.currentHp = 0;
+          log(`KI: ${weapon.name} Execution Mark: ${bw.name} hingerichtet!`, 'effect');
+        } else {
+          bw.currentHp -= weapon.currentAtk;
+          log(`KI: ${weapon.name} ${bw.currentHp <= 0 ? 'tötet' : 'greift an'} ${bw.name}`, 'enemy');
+        }
         weapon.usedThisTurn = true; weapon.durabilityLeft--;
-        log(`KI: ${weapon.name} tötet ${bw.name}`, 'enemy');
-        attackedWithWeapon = true;
-      } else if (bw) {
-        bw.currentHp -= weapon.currentAtk;
-        weapon.usedThisTurn = true; weapon.durabilityLeft--;
-        log(`KI: ${weapon.name} greift ${bw.name} an`, 'enemy');
         attackedWithWeapon = true;
       }
     } else if (G.player.board.length > 0) {
       const target = G.player.board.reduce((a,b) => b.currentHp < a.currentHp ? b : a);
-      if (target.currentHp <= weapon.currentAtk) {
-        target.currentHp -= weapon.currentAtk;
+      if (target.currentHp <= weapon.currentAtk || (weapon.effects.includes('execution_mark') && target.currentHp <= 2)) {
+        // Execution Mark: instakill if target ≤2 HP
+        if (weapon.effects.includes('execution_mark') && target.currentHp <= 2) {
+          target.currentHp = 0;
+          log(`KI: ${weapon.name} Execution Mark: ${target.name} hingerichtet!`, 'effect');
+        } else {
+          target.currentHp -= weapon.currentAtk;
+          log(`KI: ${weapon.name} tötet ${target.name}`, 'enemy');
+        }
         weapon.usedThisTurn = true; weapon.durabilityLeft--;
-        log(`KI: ${weapon.name} tötet ${target.name}`, 'enemy');
         attackedWithWeapon = true;
       } else {
         G.player.hp -= weapon.currentAtk;
         weapon.usedThisTurn = true; weapon.durabilityLeft--;
         log(`KI: ${weapon.name} greift dich an: <span class='log-damage'>${weapon.currentAtk} Schaden</span>`, 'enemy');
         showDamagePopup(weapon.currentAtk, 'player-portrait', true);
+        // Counter-damage from player weapon when AI hero attacks player minion... N/A here (attacking hero directly)
         attackedWithWeapon = true;
       }
     } else {
@@ -2012,10 +2065,6 @@ async function runAITurn() {
       attackedWithWeapon = true;
     }
     if (attackedWithWeapon) {
-      if (weapon.effects.includes('execution_mark')) {
-        const targets = G.player.board.filter(m => m.currentHp <= 2 && m.currentHp > 0);
-        targets.forEach(m => { m.currentHp = 0; log(`KI Execution Mark: ${m.name} hingerichtet!`, 'effect'); });
-      }
       if (weapon.durabilityLeft <= 0) {
         log(`KI: ${weapon.name} zerbricht!`, 'system');
         G.ai.graveyard.push(weapon);
@@ -2084,6 +2133,11 @@ function performAIMinionAttack(attacker) {
       attacker.tapped = true;
       log(`KI: <b>${attacker.name}</b> greift dich an: <span class='log-damage'>${atk} Schaden</span>`, 'enemy');
       showDamagePopup(atk, 'player-portrait', true);
+      // Counter-damage from player weapon
+      if (G.player.weapon) {
+        attacker.currentHp -= G.player.weapon.currentAtk;
+        log(`${attacker.name} nimmt <span class='log-damage'>${G.player.weapon.currentAtk} Gegenschaden</span> von ${G.player.weapon.name}`, 'player');
+      }
       if (attacker.effects.includes('venombrand')) { G.player.hp -= 1; log(`Venombrand: +1 auf Held`, 'effect'); }
       if (attacker.effects.includes('lifebond')) { G.ai.hp = Math.min(G.ai.maxHp, G.ai.hp + atk); log(`Lifebond: KI +${atk} HP`, 'heal'); }
       if (attacker.effects.includes('blade_dance')) {
@@ -2102,6 +2156,11 @@ function performAIMinionAttack(attacker) {
     attacker.tapped = true;
     log(`KI: <b>${attacker.name}</b> greift dich an: <span class='log-damage'>${atk} Schaden</span>`, 'enemy');
     showDamagePopup(atk, 'player-portrait', true);
+    // Counter-damage from player weapon
+    if (G.player.weapon) {
+      attacker.currentHp -= G.player.weapon.currentAtk;
+      log(`${attacker.name} nimmt <span class='log-damage'>${G.player.weapon.currentAtk} Gegenschaden</span> von ${G.player.weapon.name}`, 'player');
+    }
     return;
   }
 
@@ -2117,6 +2176,7 @@ function performAIMinionAttack(attacker) {
   }
   if (attacker.effects.includes('venombrand') && target.currentHp > 0) {
     target.venombrandMark = true;
+    target.venombrandMarkOwner = 'ai';
     log(`Venombrand: ${target.name} stirbt am Rundenende`, 'effect');
   }
   if (attacker.effects.includes('lifebond')) {
@@ -2155,9 +2215,16 @@ function checkWinCondition() {
     return;
   }
 
+  // Alt-win: checked at end of the respective player's turn
   if (!G.isPlayerTurn) {
+    // Check player first (AI's turn: player could have run out)
     if (G.player.deck.length === 0 && G.player.hand.length === 0 && G.player.board.length === 0) {
       endGame('lose', 'Niederlage', 'Kein Deck, keine Hand, keine Minions mehr!');
+    }
+  } else {
+    // Player's turn end: check if AI has run out
+    if (G.ai.deck.length === 0 && G.ai.hand.length === 0 && G.ai.board.length === 0) {
+      endGame('win', 'Sieg!', 'Gegner hat kein Deck, keine Hand und keine Minions mehr!');
     }
   }
 }
@@ -2405,6 +2472,14 @@ function cancelAction() {
     G.pendingSpell = null;
   }
   if (G.pendingBattlecry) {
+    // The minion was already placed on the board — remove it and refund aether
+    const card = G.pendingBattlecry.card;
+    const idx = G.player.board.findIndex(m => m.instanceId === card.instanceId);
+    if (idx !== -1) {
+      G.player.board.splice(idx, 1);
+      G.player.aether += card.cost;
+      G.player.hand.push(card);
+    }
     G.pendingBattlecry = null;
   }
   G.selectedAttacker = null;
